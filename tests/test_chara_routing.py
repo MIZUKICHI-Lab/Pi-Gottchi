@@ -36,6 +36,13 @@ import chara  # noqa: E402
 
 
 class ButtonRoutingTests(unittest.TestCase):
+    def test_simple_switch_sleep_default_is_off(self):
+        simple = types.SimpleNamespace(backlight_mode=False)
+        pwm = types.SimpleNamespace(backlight_mode=True)
+        self.assertEqual(0, chara.default_sleep_backlight(simple))
+        self.assertEqual(chara.SLEEP_BACKLIGHT,
+                         chara.default_sleep_backlight(pwm))
+
     def bare_moko(self, mode):
         moko = chara.Moko.__new__(chara.Moko)
         moko.press_t = time.time() - 1

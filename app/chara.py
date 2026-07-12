@@ -52,7 +52,7 @@ FONT_PATHS = ("/usr/share/fonts/truetype/vlgothic/VL-PGothic-Regular.ttf",
 
 FRAME_SEC = 0.2              # 描画周期（Pi Zero で無理のない速度）
 AWAKE_BACKLIGHT = 100        # 起床中のLCDバックライト（0〜100）
-SLEEP_BACKLIGHT = 12         # 睡眠中は画面も暗くしてハード状態を合わせる
+SLEEP_BACKLIGHT = 12         # PWM対応機の睡眠時。ON/OFF機は未設定なら0にする
 HOLD_SEC = 0.35              # これ以上の長押しで「話しかける」
 SLEEP_AFTER = 20.0           # 会話・操作がないと眠るまでの秒数
 NIGHT_SLEEP_AFTER = 10.0     # 夜間の入眠までの秒数
@@ -154,6 +154,11 @@ def env_int(env, name, default, low=0, high=100):
         value = default
         print(f"[config] {name} は整数でないため既定値 {default} を使います")
     return max(low, min(high, value))
+
+
+def default_sleep_backlight(board):
+    """PWM非対応のPi Zero Wでは、減光値が点灯扱いになるため消灯を返す。"""
+    return SLEEP_BACKLIGHT if getattr(board, "backlight_mode", True) else 0
 
 
 try:
@@ -322,9 +327,9 @@ class Moko:
         stop_splash()
         self.awake_backlight = env_int(
             self.env, "AWAKE_BACKLIGHT", AWAKE_BACKLIGHT)
-        self.sleep_backlight = env_int(
-            self.env, "SLEEP_BACKLIGHT", SLEEP_BACKLIGHT)
         self.board = WhisplayBoard()
+        self.sleep_backlight = env_int(
+            self.env, "SLEEP_BACKLIGHT", default_sleep_backlight(self.board))
         self.board.set_backlight(self.awake_backlight)
         self.font = load_font(16)
         self.state = load_state()

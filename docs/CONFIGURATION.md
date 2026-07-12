@@ -15,7 +15,9 @@
 | `LIVE_ECHO_GUARD_MS` | いいえ | `350` | 再生・サーボ後の残響破棄（100〜1000ms） |
 | `VOICEPRINT` | いいえ | `off` | `off`、`log`、`gate` のいずれか |
 | `AWAKE_BACKLIGHT` | いいえ | `100` | 起床中のLCDバックライト（0〜100） |
-| `SLEEP_BACKLIGHT` | いいえ | `12` | 睡眠中のLCDバックライト（0〜100） |
+| `SLEEP_BACKLIGHT` | いいえ | `12`（Pi Zero Wは`0`） | 睡眠中のLCDバックライト（0〜100） |
+
+Pi Zero WでWhisplayドライバが `Simple Switch` と判定した場合、1〜100はすべて同じ点灯状態です。そのため `SLEEP_BACKLIGHT` を明示しなければ睡眠時は0で消灯します。PWM対応機では12%減光を使います。
 
 モデル名は API 側で変更・廃止されることがあります。接続できない場合は Google の最新ドキュメントで利用可能なモデル名を確認してください。
 
