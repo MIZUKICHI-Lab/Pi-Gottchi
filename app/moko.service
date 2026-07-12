@@ -5,8 +5,8 @@ Description=Moko tamagotchi character
 After=sound.target
 
 [Service]
-WorkingDirectory=/home/mizukichi/whisplay-moko
-ExecStart=/usr/bin/python3 -u /home/mizukichi/whisplay-moko/chara.py
+WorkingDirectory=/home/mizukichi/Pi-Gottchi/app
+ExecStart=/usr/bin/python3 -u /home/mizukichi/Pi-Gottchi/app/chara.py
 Restart=always
 RestartSec=3
 StandardOutput=journal

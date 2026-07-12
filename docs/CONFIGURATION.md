@@ -10,7 +10,12 @@
 | `GEMINI_MODEL` | いいえ | `gemini-2.5-flash` | REST 会話モデル |
 | `GEMINI_LIVE_MODEL` | いいえ | `gemini-2.5-flash-native-audio-latest` | Live 音声モデル |
 | `GEMINI_TTS_MODEL` | いいえ | コード内の候補 | 反応ボイス生成モデル |
-| `VOICEPRINT` | いいえ | `log` | `off`、`log`、`gate` のいずれか |
+| `LIVE_CHUNK_MS` | いいえ | `100` | Liveへ送る音声チャンク長（40〜500ms） |
+| `LIVE_SILENCE_MS` | いいえ | `700` | 発話終了とみなす無音（500〜2000ms） |
+| `LIVE_ECHO_GUARD_MS` | いいえ | `350` | 再生・サーボ後の残響破棄（100〜1000ms） |
+| `VOICEPRINT` | いいえ | `off` | `off`、`log`、`gate` のいずれか |
+| `AWAKE_BACKLIGHT` | いいえ | `100` | 起床中のLCDバックライト（0〜100） |
+| `SLEEP_BACKLIGHT` | いいえ | `12` | 睡眠中のLCDバックライト（0〜100） |
 
 モデル名は API 側で変更・廃止されることがあります。接続できない場合は Google の最新ドキュメントで利用可能なモデル名を確認してください。
 
@@ -24,7 +29,26 @@
 | `log` | 類似度をログへ出力するだけ |
 | `gate` | しきい値未満の声を処理しない実験モード |
 
-`gate` は周囲の雑音、マイク位置、声質の変化で誤判定する可能性があります。初めは `off` または `log` を推奨します。しきい値は `app/live.py` の `VP_THRESH` です。
+`log` は返答再生後に別スレッドで計算します。`gate` は返答前に同期計算するためPi Zeroでは遅延が増え、周囲の雑音、マイク位置、声質の変化でも誤判定します。通常は `off` を推奨します。しきい値は `app/live.py` の `VP_THRESH` です。
+
+## サーボ
+
+サーボは安全のため既定で無効です。配線、外部電源、無負荷テスト後に設定します。
+
+| 変数 | 既定値 | 用途 |
+|---|---:|---|
+| `SERVO_ENABLED` | `0` | `1` でリアクション連動を有効化 |
+| `SERVO_CHANNEL` | `0` | PWM channel。0=BCM12、1=BCM13 |
+| `SERVO_MIN_ANGLE` | `70` | アプリが使う安全角度の下端 |
+| `SERVO_CENTER` | `90` | 中央・重心中立姿勢 |
+| `SERVO_MAX_ANGLE` | `110` | アプリが使う安全角度の上端 |
+| `SERVO_SLEEP_ANGLE` | `80` | 睡眠姿勢 |
+| `SERVO_MIN_PULSE_US` | `500` | 0度相当の校正パルス幅 |
+| `SERVO_MAX_PULSE_US` | `2400` | 180度相当の校正パルス幅 |
+| `SERVO_REVERSED` | `0` | `1` でリアクション方向を反転 |
+| `SERVO_HOLD` | `0` | `1` で動作後も保持トルクを維持 |
+
+設定と故障安全性は[ハードウェア連動](HARDWARE_INTEGRATION.md)と[配線ガイド](../app/WIRING.md)を先に確認してください。
 
 ## キャラクター設定
 

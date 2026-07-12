@@ -31,6 +31,12 @@ Python ファイルの最低限の構文確認:
 python3 -m compileall app preview.py gen_boot_frames.py
 ```
 
+音声状態、端末コマンド、サーボ制御の回帰テスト:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
 実機なしで顔の描画を確認:
 
 ```bash

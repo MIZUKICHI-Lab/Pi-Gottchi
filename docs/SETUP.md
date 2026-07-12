@@ -63,6 +63,15 @@ GEMINI_API_KEY=your_api_key_here
 
 ## 5. 手動で起動する
 
+最初にハードウェア不要の回帰テストを実行します。
+
+```bash
+cd ~/Pi-Gottchi
+python3 -m unittest discover -s tests -v
+```
+
+その後アプリを起動します。
+
 ```bash
 cd ~/Pi-Gottchi/app
 python3 chara.py
@@ -79,7 +88,7 @@ python3 chara.py
 
 ## 6. systemd で自動起動する
 
-同梱ユニットは `/home/mizukichi/whisplay-moko` を前提にしています。自分のユーザー名とクローン先に合わせて、コピー後のユニットを編集してください。
+同梱ユニットは `/home/mizukichi/Pi-Gottchi/app` を前提にしています。自分のユーザー名とクローン先に合わせて、コピー後のユニットを編集してください。
 
 ```bash
 sudo cp app/moko.service /etc/systemd/system/
@@ -88,7 +97,7 @@ sudo nano /etc/systemd/system/moko.service
 sudo nano /etc/systemd/system/moko-splash.service
 ```
 
-両ファイルの `/home/mizukichi/whisplay-moko` を、実際の `app` ディレクトリの絶対パス（例: `/home/pi/Pi-Gottchi/app`）へ置き換えます。その後、有効化します。
+両ファイルの `/home/mizukichi/Pi-Gottchi/app` を、実際の `app` ディレクトリの絶対パス（例: `/home/pi/Pi-Gottchi/app`）へ置き換えます。その後、有効化します。
 
 ```bash
 sudo systemctl daemon-reload
@@ -103,3 +112,17 @@ sudo journalctl -u moko.service -f
 ```
 
 起動できない場合は[トラブルシューティング](TROUBLESHOOTING.md)を参照してください。加速度センサーやサーボを追加する場合は[配線ガイド](../app/WIRING.md)へ進みます。
+
+## 8. Gitで更新する
+
+実行中ファイルを直接上書きせず、`main` をfast-forwardで取得してからサービスを再起動します。
+
+```bash
+cd ~/Pi-Gottchi
+git pull --ff-only origin main
+python3 -m unittest discover -s tests -v
+sudo systemctl restart moko-splash.service moko.service
+sudo systemctl status moko.service --no-pager
+```
+
+`app/.env`、`memory.json`、`state.json`、`voices/` はGit管理外なので、pullしても保持されます。

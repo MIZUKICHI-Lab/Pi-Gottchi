@@ -3,7 +3,7 @@
 
 - LCD にまるいキャラを常時アニメ表示（まばたき・ぷにぷに・気分で表情が変化）
 - 揺らすと反応（加速度センサー自動検出。未配線でも他機能は動く）
-- ボタン短押し = なでる / 長押し = 話しかける（Whisper → Claude → 可愛い声のTTS）
+- Gemini Liveのハンズフリー会話。切断中はボタン押下録音のREST経路へ切替
 - 音に反応、夜や放置で眠る、なつき度はハートで表示して保存
 
 実行: cd ~/whisplay-chara && python3 chara.py
@@ -12,6 +12,7 @@ import json
 import math
 import os
 import random
+import signal
 import subprocess
 import sys
 import threading
@@ -29,7 +30,9 @@ sys.path.insert(0, HERE)
 import face  # noqa: E402
 import voice  # noqa: E402
 from imu import ShakeMonitor  # noqa: E402
+from intents import detect_control_intent  # noqa: E402
 from memory import MokoMemory  # noqa: E402
+from servo import ServoAnimator  # noqa: E402
 from whisplay import WhisplayBoard  # noqa: E402
 
 try:  # Live会話（即答モード）。websockets が無ければ REST にフォールバック
@@ -48,6 +51,8 @@ FONT_PATHS = ("/usr/share/fonts/truetype/vlgothic/VL-PGothic-Regular.ttf",
               "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 
 FRAME_SEC = 0.2              # 描画周期（Pi Zero で無理のない速度）
+AWAKE_BACKLIGHT = 100        # 起床中のLCDバックライト（0〜100）
+SLEEP_BACKLIGHT = 12         # 睡眠中は画面も暗くしてハード状態を合わせる
 HOLD_SEC = 0.35              # これ以上の長押しで「話しかける」
 SLEEP_AFTER = 20.0           # 会話・操作がないと眠るまでの秒数
 NIGHT_SLEEP_AFTER = 10.0     # 夜間の入眠までの秒数
@@ -67,7 +72,6 @@ LED = {
 }
 
 CHIMES = {
-    "listen": "synth 0.12 sine 880-1320 vol 0.4",
     "happy": "synth 0.22 sine 700-1400 vol 0.5",
     "wow": "synth 0.15 sine 500-1000 vol 0.5",
     "dizzy": "synth 0.5 sine 800-300 vol 0.5",
@@ -141,6 +145,15 @@ def ensure_chimes():
 def is_night():
     hour = time.localtime().tm_hour
     return hour >= NIGHT[0] or hour < NIGHT[1]
+
+
+def env_int(env, name, default, low=0, high=100):
+    try:
+        value = int(env.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+        print(f"[config] {name} は整数でないため既定値 {default} を使います")
+    return max(low, min(high, value))
 
 
 try:
@@ -218,6 +231,7 @@ class Convo:
         self.lock = threading.Lock()
         self.stage = None            # None/stt/think/speak/err_no_hear/err_net
         self.reply = ""
+        self.user_text = ""
 
     def busy(self):
         with self.lock:
@@ -226,22 +240,29 @@ class Convo:
     def start(self, wav):
         with self.lock:
             self.stage = "stt"
+            self.reply = ""
+            self.user_text = ""
         threading.Thread(target=self._run, args=(wav,), daemon=True).start()
 
-    def _set(self, stage, reply=""):
+    def _set(self, stage, reply="", user_text=None):
         with self.lock:
             self.stage, self.reply = stage, reply
+            if user_text is not None:
+                self.user_text = user_text
 
     def take_result(self):
-        """speak/エラーになったら (stage, reply) を返して None に戻す。"""
+        """完了時に (stage, reply, user_text) を返して待機状態へ戻す。"""
         with self.lock:
             if self.stage in ("speak", "err_no_hear", "err_net"):
-                out = (self.stage, self.reply)
+                out = (self.stage, self.reply, self.user_text)
                 self.stage = None
+                self.reply = ""
+                self.user_text = ""
                 return out
         return None
 
     def _run(self, wav):
+        user_text = ""
         try:
             t0 = time.time()
             trimmed = self.history[-MAX_HISTORY * 2:]
@@ -259,7 +280,7 @@ class Convo:
                         self.env["ANTHROPIC_API_KEY"], self.model, extra)
             if not user_text or not reply:
                 print(f"[convo] 聞き取れず (user={user_text!r} reply={reply!r})")
-                self._set("err_no_hear")
+                self._set("err_no_hear", user_text=user_text)
                 return
             print(f"[you] {user_text}")
             print(f"[moko] {reply}")
@@ -278,11 +299,11 @@ class Convo:
             except (requests.RequestException, ValueError, KeyError) as exc:
                 print(f"[!] TTSエラー（字幕のみで返答）: {exc}")
             print(f"[convo] 生成{t1 - t0:.1f}s + TTS{time.time() - t1:.1f}s")
-            self._set("speak", reply)
+            self._set("speak", reply, user_text=user_text)
         except (requests.RequestException, ValueError, KeyError,
                 IndexError, TypeError, OSError) as exc:
             print(f"[!] 会話エラー: {type(exc).__name__}: {exc}")
-            self._set("err_net")
+            self._set("err_net", user_text=user_text)
 
 
 # ---------- 本体 ----------
@@ -299,24 +320,38 @@ class Moko:
             print(f"    {os.path.join(HERE, '.env')} に GEMINI_API_KEY（無料枠可）"
                   "を記入すると全機能が使えます")
         stop_splash()
+        self.awake_backlight = env_int(
+            self.env, "AWAKE_BACKLIGHT", AWAKE_BACKLIGHT)
+        self.sleep_backlight = env_int(
+            self.env, "SLEEP_BACKLIGHT", SLEEP_BACKLIGHT)
         self.board = WhisplayBoard()
-        self.board.set_backlight(100)
+        self.board.set_backlight(self.awake_backlight)
         self.font = load_font(16)
         self.state = load_state()
         self.clips = voice.ClipBank(VOICES_DIR, ALSA_DEV)
         self.memory = MokoMemory(os.path.join(HERE, "memory.json"))
         self.convo = Convo(self.env, self.memory)
         self.shaker = ShakeMonitor()
+        self.motion = ServoAnimator.from_env(self.env)
         self.chat = None             # 連続会話（ChatGPT音声モード風）
         self.was_sleeping = False
         self.was_asleep = False      # 記憶整理トリガー用（寝入りの瞬間を検出）
+        self._control_lock = threading.RLock()
+        self.manual_sleep = False    # 音声コマンドで入る、明示的な睡眠ラッチ
+        self.pending_sleep = False   # 返答再生後にmanual_sleepへ移す
+        self._last_live_phase = "idle"
+        self._rest_fallback = False  # ボタン録音中はLive再接続を止める
+        self._rest_release_pending = False
+        self._wake_generation = 0
+        self._rest_request_generation = None
+        self._stop_requested = False
         if live is not None and self.online and self.provider == "gemini":
             self.env["ALSA_DEV"] = ALSA_DEV
             self.chat = live.LiveChat(self.env, voice.SYSTEM_PROMPT, self.memory)
             self.chat.start()
 
         self.press_t = None          # ボタン押下時刻（押下中のみ）
-        self._chimed = False
+        self.press_mode = None       # 押下開始時の経路をlive/restで固定する
         self.actions = []            # ボタン由来のアクション
         self.clicks = 0              # 短押しの連続回数
         self.last_click = 0.0
@@ -343,10 +378,16 @@ class Moko:
     # ---- ボタン ----
     def _on_press(self):
         """連続会話モードでは会話はハンズフリー。ボタンはなでる/起こす/電源用。"""
-        self._chimed = False
+        self._wake("button")
         self.press_t = time.time()
+        self.press_mode = "live"
         if self.chat is None or not self.chat.connected:
             # RESTモード（Live切断中の自動フォールバック含む）: 押下中録音→話す
+            self.press_mode = "rest"         # 解放時に再判定せず、この経路を維持
+            self._rest_fallback = True
+            self._rest_release_pending = False
+            if self.chat:
+                self.chat.suspend()           # 録音・REST処理中のALSA競合を防ぐ
             self._start_recording()
             if self.online:
                 threading.Thread(target=voice.prewarm, args=(self.env,),
@@ -357,15 +398,18 @@ class Moko:
             return
         dur = time.time() - self.press_t
         self.press_t = None
+        mode, self.press_mode = self.press_mode, None
         if dur >= HOLD_SEC:
-            if self.chat is None or (self.rec_proc and not self.chat.connected):
-                self.actions.append("talk")  # Live切断中はボタン会話で確実に話せる
+            if mode == "rest":
+                self.actions.append("talk")  # 押下中にLiveが再接続しても録音を捨てない
             else:
                 self.clicks += 1             # 連続会話モード中の長押し=なでる扱い
                 self.last_click = time.time()
         else:                                # 短押しは回数をまとめて判定
             self.clicks += 1
             self.last_click = time.time()
+            if mode == "rest":
+                self._rest_release_pending = True
 
     # ---- 録音 ----
     def _start_recording(self):
@@ -394,9 +438,18 @@ class Moko:
 
     # ---- 音声再生 ----
     def _stop_audio(self):
-        if self.audio_proc and self.audio_proc.poll() is None:
-            self.audio_proc.terminate()
-        self.audio_proc = None
+        proc, self.audio_proc = self.audio_proc, None
+        if not proc or proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _play_clip(self, prefix):
         if self.audio_proc and self.audio_proc.poll() is None:
@@ -406,21 +459,49 @@ class Moko:
             self._play_chime(FALLBACK_CHIME[prefix])   # ボイス未生成でも電子音で鳴く
 
     def _play_chime(self, name):
-        subprocess.Popen(["aplay", "-q", "-D", ALSA_DEV, f"/tmp/moko_{name}.wav"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.audio_proc = subprocess.Popen(
+            ["aplay", "-q", "-D", ALSA_DEV, f"/tmp/moko_{name}.wav"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _speaking(self):
         return self.audio_proc is not None and self.audio_proc.poll() is None
 
     # ---- 反応 ----
+    def _wake(self, reason):
+        """すべての起床経路で明示睡眠ラッチと活動時刻を同時に戻す。"""
+        with self._control_lock:
+            was_sleeping = self.manual_sleep
+            self.manual_sleep = False
+            self.pending_sleep = False
+            self._wake_generation += 1
+            chat = getattr(self, "chat", None)
+            if chat:
+                # 完了済みイベントも同じ起床操作で破棄し、後から寝直さない。
+                chat.cancel_pending_controls()
+            self.last_activity = time.time()
+            generation = self._wake_generation
+        if was_sleeping:
+            print(f"[*] 起床要求: {reason}")
+        return generation
+
+    def _request_sleep(self, reason):
+        """誤認識でも戻せるアプリ内スリープだけを要求する。"""
+        with self._control_lock:
+            was_sleeping = self.manual_sleep
+            self.pending_sleep = False
+            self.manual_sleep = True
+        if not was_sleeping:
+            print(f"[*] 音声コマンドでおやすみ ({reason})")
+
     def _react(self, expr, secs, clip=None, mood=0.0, xp=0):
         now = time.time()
+        self._wake(f"reaction:{expr}")
         self.react_expr, self.react_until = expr, now + secs
-        self.last_activity = now
         self.state["mood"] = max(0.0, min(100.0, self.state["mood"] + mood))
         self.state["bond_xp"] += xp
         if expr == "happy":
             self.hearts_start = now
+        self.motion.react("wake" if clip == "wake" else expr)
         if clip:
             self._play_clip(clip)
 
@@ -444,7 +525,6 @@ class Moko:
             return
         n, self.clicks = self.clicks, 0
         self._stop_recording()
-        self.last_activity = time.time()
         if n == 1:
             print("[btn] なでなで")
             self._react("happy", 1.8, "petted", mood=15, xp=1)
@@ -458,7 +538,7 @@ class Moko:
     def _handle_actions(self):
         while self.actions:
             act = self.actions.pop(0)
-            self.last_activity = time.time()
+            request_generation = self._wake("button-talk")
             self._stop_recording()
             if act == "talk":
                 size = os.path.getsize(REC_WAV) if os.path.exists(REC_WAV) else 0
@@ -466,43 +546,52 @@ class Moko:
                 print(f"[btn] おはなし (録音={size}B ok={ok} busy={self.convo.busy()})")
                 if not self.online:
                     self._react("sad", 2.5, "no_net")
+                    self._rest_release_pending = True
                 elif ok and not self.convo.busy():
+                    with self._control_lock:
+                        self._rest_request_generation = request_generation
                     self.convo.start(REC_WAV)
                 elif not ok:                 # 録音が短い/マイク競合
                     self._react("sad", 2.5, "no_hear")
+                    self._rest_release_pending = True
+                else:
+                    self._rest_release_pending = True
 
     def _handle_live(self):
-        """連続会話の状態を本体へ反映（吹き出し・活動時刻・睡眠での停止/再開）。"""
+        """連続会話の表示・活動・確定発話イベントを本体へ反映する。"""
         if self.chat is None:
             return
         now = time.time()
-        self.chat.external_mute(self._speaking())   # 反応ボイス中は聞かない
-        # 聞き取り完了の瞬間に「ピコッ」= 聞こえたよの合図（もう一度話さなくていい）
-        if (self.chat.phase == "listen" and self.chat.in_text
-                and now - self.chat.last_voice > 0.7):
-            if not getattr(self, "_acked", False):
-                self._acked = True
-                self._play_chime("listen")
-        elif self.chat.phase == "idle":
-            self._acked = False
+        if self.chat.phase != self._last_live_phase:
+            if self.chat.phase == "play":
+                self.motion.react("talking")
+            self._last_live_phase = self.chat.phase
+        # 反応音声とサーボ機械音はGeminiへ戻さない。
+        self.chat.external_mute(self._speaking() or self.motion.moving.is_set())
         if self.chat.phase == "play" and self.chat.out_text:
             self.bubble = (self.chat.out_text, now + 2.0)
             self.state["mood"] = min(100.0, self.state["mood"] + 0.05)
         self.last_activity = max(self.last_activity, self.chat.last_voice)
-        sleeping = self._is_sleeping() and self.chat.phase == "idle"  # 会話中は寝ない
-        if sleeping and not self.was_sleeping:
-            print("[*] おやすみ（会話マイク停止）")
-            self.chat.suspend()
-        elif not sleeping and self.was_sleeping:
-            print("[*] おはよう（会話マイク再開）")
-            self.chat.resume()
-        self.was_sleeping = sleeping
+        while True:
+            with self._control_lock:
+                event_generation = self._wake_generation
+            utterance = self.chat.pop_completed_turn()
+            if utterance is None:
+                break
+            if detect_control_intent(utterance) == "sleep":
+                with self._control_lock:
+                    # popから反映までに物理操作があれば、古い音声指示を捨てる。
+                    if event_generation == self._wake_generation:
+                        self.pending_sleep = True
 
     def _handle_convo_result(self):
         res = self.convo.take_result()
         if res is None:
             return
-        stage, reply = res
+        stage, reply, user_text = res
+        with self._control_lock:
+            request_generation = self._rest_request_generation
+            self._rest_request_generation = None
         if stage == "speak":
             self._stop_audio()
             if os.path.exists(TTS_WAV):      # TTS失敗時は字幕のみ
@@ -512,17 +601,61 @@ class Moko:
             self.bubble = (reply, time.time() + max(5.0, len(reply) * 0.28))
             self.state["bond_xp"] += 2
             self.state["mood"] = min(100.0, self.state["mood"] + 8)
+            self.motion.react("talking")
         elif stage == "err_no_hear":
             self._react("sad", 2.5, "no_hear")
         elif stage == "err_net":
             self._react("sad", 3.0, "no_net")
         self.last_activity = time.time()
+        if stage == "speak" and detect_control_intent(user_text) == "sleep":
+            with self._control_lock:
+                # 再生準備中のボタン起床も尊重し、古い結果で寝直さない。
+                if request_generation == self._wake_generation:
+                    self.pending_sleep = True
+        if self._rest_fallback:
+            self._rest_release_pending = True
+
+    def _handle_pending_sleep(self):
+        with self._control_lock:
+            if self.pending_sleep and not self._speaking():
+                self._request_sleep("おやすみ/さよなら")
+
+    def _handle_rest_fallback(self):
+        """REST返答・エラー音声が終わってからLiveを再開する。"""
+        if not self._rest_fallback or not self._rest_release_pending:
+            return
+        if self.rec_proc or self.convo.busy() or self._speaking():
+            return
+        self._rest_release_pending = False
+        self._rest_fallback = False
+        if self.chat and not self._is_sleeping():
+            self.chat.resume()
+
+    def _handle_sleep_state(self):
+        """画面・マイク・サーボを一つの睡眠状態へ同期する。"""
+        sleeping = self._is_sleeping()
+        if self.chat is not None and self.chat.phase != "idle":
+            sleeping = False                  # 会話ターンの途中では寝ない
+        if sleeping and not self.was_sleeping:
+            print("[*] おやすみ（マイク停止・画面減光）")
+            if self.chat:
+                self.chat.suspend()
+            self.board.set_backlight(self.sleep_backlight)
+            self.motion.react("sleeping")
+        elif not sleeping and self.was_sleeping:
+            print("[*] おはよう（画面・会話を再開）")
+            self.board.set_backlight(self.awake_backlight)
+            self.motion.react("wake")
+            if self.chat and not self._rest_fallback:
+                self.chat.resume()
+        self.was_sleeping = sleeping
 
     # ---- 環境音 ----
     def _ambient_check(self):
         now = time.time()
         busy = (self.press_t is not None or self.rec_proc or self.convo.busy()
                 or self._speaking() or now < self.react_until
+                or self.motion.moving.is_set()
                 or (self.chat is not None and self.chat.active()))
         sleeping = self._is_sleeping()
         interval = WAKE_CHECK_SEC if sleeping else AMBIENT_SEC
@@ -573,17 +706,26 @@ class Moko:
         if self.chat:
             self.chat.close()
         self._stop_audio()
+        self.motion.react("sleeping")
         proc = self.clips.play(clip, 0, self.provider)
         for _ in range(8):
             self._draw("sleeping")
             time.sleep(0.3)
         if proc and proc.poll() is None:
             proc.wait()
+        self.motion.close(park_center=False)
         save_state(self.state)
         subprocess.run(["shutdown", "-h", "now"], check=False)
 
     # ---- 状態 ----
     def _is_sleeping(self):
+        with self._control_lock:
+            if self.manual_sleep:
+                return True
+        if (self._rest_fallback or self.press_t is not None or self.rec_proc
+                or self.convo.busy() or self._speaking()
+                or (self.chat is not None and self.chat.phase != "idle")):
+            return False
         idle = time.time() - self.last_activity
         return idle > SLEEP_AFTER or (is_night() and idle > NIGHT_SLEEP_AFTER)
 
@@ -600,10 +742,9 @@ class Moko:
             if self.chat.phase == "play":
                 return "talking"
             if self.chat.phase == "listen":
-                # 発話が途切れて0.6秒 → 考え中の顔（返事待ちの見える化）
-                if self.chat.in_text and now - self.chat.last_voice > 0.6:
-                    return "thinking"
                 return "listening"
+            if self.chat.phase == "think":
+                return "thinking"
         if self.press_t is not None or self.rec_proc:
             return "listening"
         if self.convo.busy():
@@ -674,7 +815,12 @@ class Moko:
             print(f"[!] ボイス生成を中断（次回起動時に続きから再開）: {exc}")
 
     # ---- メインループ ----
+    def _handle_stop_signal(self, signum, _frame):
+        print(f"[*] 終了シグナル {signum} を受信、安全停止します")
+        self._stop_requested = True
+
     def run(self):
+        signal.signal(signal.SIGTERM, self._handle_stop_signal)
         ensure_chimes()
         self.shaker.start()
         self._prepare_clips()
@@ -682,21 +828,20 @@ class Moko:
         self._react("happy", 2.5, "greet", xp=0)
         was_recording = False
         try:
-            while True:
+            while not self._stop_requested:
                 self._decay_mood()
                 self._handle_shake()
                 self._handle_clicks()
                 self._handle_actions()
                 self._handle_live()
                 self._handle_convo_result()
+                self._handle_pending_sleep()
+                self._handle_rest_fallback()
 
-                # 長押し中: HOLD超えでチャイム。録音が死んでいたら復帰（マイク競合対策）
+                # 長押し中: 録音監視と10秒シャットダウン
                 pressing = self.press_t is not None
                 if pressing:
                     held = time.time() - self.press_t
-                    if not self._chimed and held >= HOLD_SEC:
-                        self._chimed = True
-                        self._play_chime("listen")
                     if held >= SHUTDOWN_HOLD:    # 10秒長押し=電源オフ
                         self._safe_shutdown("sleepy", "ボタン10秒長押し")
                     if self.rec_proc and self.rec_proc.poll() is not None:
@@ -706,6 +851,7 @@ class Moko:
                         self._ambient_check()
                 was_recording = self.rec_proc is not None
                 self._check_battery()
+                self._handle_sleep_state()
 
                 sleeping = self._is_sleeping()
                 if sleeping and not self.was_asleep:
@@ -713,12 +859,13 @@ class Moko:
                 self.was_asleep = sleeping
 
                 self._update_blink()
-                self._draw(self._current_expr())
+                expr = self._current_expr()
+                self._draw(expr)
                 if self.frame % 80 == 0:
                     save_state(self.state)
                 if self.frame % 300 == 0:   # フリーズ切り分け用ハートビート
                     imu = self.shaker.name if self.shaker.present else "未接続"
-                    print(f"[tick] frame={self.frame} expr={self._current_expr()} "
+                    print(f"[tick] frame={self.frame} expr={expr} "
                           f"mood={self.state['mood']:.0f} imu={imu}")
                 self.frame += 1
                 # 相手の発話ストリーミング中は描画を減速してCPUを通信に譲る
@@ -729,8 +876,12 @@ class Moko:
         finally:
             save_state(self.state)
             self.shaker.stop()
+            if self.chat:
+                self.chat.close()
             self._stop_recording()
             self._stop_audio()
+            self.motion.close()
+            self.board.set_backlight(0)
             self.board.set_rgb(0, 0, 0)
             self.board.cleanup()
 
