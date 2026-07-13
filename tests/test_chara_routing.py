@@ -52,8 +52,11 @@ class ButtonRoutingTests(unittest.TestCase):
                 self.actions.append(name)
 
         moko = chara.Moko.__new__(chara.Moko)
+        moko._control_lock = chara.threading.RLock()
+        moko.manual_sleep = False
         moko.chat = None
         moko.was_sleeping = False
+        moko.was_deep_sleeping = False
         moko.sleep_backlight = chara.SLEEP_BACKLIGHT
         moko.board = Board()
         moko.motion = Motion()
@@ -62,6 +65,45 @@ class ButtonRoutingTests(unittest.TestCase):
         self.assertEqual([chara.SLEEP_BACKLIGHT], moko.board.values)
         self.assertGreater(moko.board.values[0], 0)
         self.assertEqual(["sleeping"], moko.motion.actions)
+
+    def test_auto_sleep_keeps_live_listening_but_manual_sleep_suspends(self):
+        class Chat:
+            phase = "idle"
+
+            def __init__(self):
+                self.suspends = 0
+
+            def suspend(self):
+                self.suspends += 1
+
+        class Board:
+            @staticmethod
+            def set_backlight(_value):
+                return None
+
+        class Motion:
+            @staticmethod
+            def react(_name):
+                return True
+
+        moko = chara.Moko.__new__(chara.Moko)
+        moko._control_lock = chara.threading.RLock()
+        moko.manual_sleep = False
+        moko.chat = Chat()
+        moko.was_sleeping = False
+        moko.was_deep_sleeping = False
+        moko.sleep_backlight = chara.SLEEP_BACKLIGHT
+        moko.board = Board()
+        moko.motion = Motion()
+        with mock.patch.object(moko, "_is_sleeping", return_value=True):
+            moko._handle_sleep_state()
+        self.assertEqual(0, moko.chat.suspends)
+
+        moko.manual_sleep = True
+        with mock.patch.object(moko, "_is_sleeping", return_value=True):
+            moko._handle_sleep_state()
+        self.assertEqual(1, moko.chat.suspends)
+        self.assertTrue(moko.was_deep_sleeping)
 
     def test_startup_grace_uses_monotonic_time_before_auto_sleep(self):
         class Conversation:
@@ -80,14 +122,14 @@ class ButtonRoutingTests(unittest.TestCase):
         moko.chat = None
         moko._boot_monotonic = 100
         moko.last_activity = 100
-        moko.startup_awake_sec = 240
-        moko.auto_sleep_sec = 300
-        moko.night_auto_sleep_sec = 120
+        moko.startup_awake_sec = 20
+        moko.auto_sleep_sec = 30
+        moko.night_auto_sleep_sec = 10
 
-        with (mock.patch.object(chara.time, "monotonic", return_value=200),
+        with (mock.patch.object(chara.time, "monotonic", return_value=110),
               mock.patch.object(chara, "is_night", return_value=True)):
             self.assertFalse(moko._is_sleeping())
-        with (mock.patch.object(chara.time, "monotonic", return_value=350),
+        with (mock.patch.object(chara.time, "monotonic", return_value=135),
               mock.patch.object(chara, "is_night", return_value=True)):
             self.assertTrue(moko._is_sleeping())
 
@@ -249,7 +291,7 @@ class ButtonRoutingTests(unittest.TestCase):
         moko._last_live_phase = "idle"
         moko.audio_proc = None
         moko.motion = Motion()
-        moko.state = {"mood": 50}
+        moko.state = {"mood": 50, "bond_xp": 0}
         moko.chat = Chat(moko)
         moko._handle_live()
         self.assertEqual(2, moko._wake_generation)

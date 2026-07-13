@@ -36,7 +36,7 @@ sudo systemctl restart moko.service
 - `moko-splash.service` と `moko.service` のログを確認する
 - HAT の向きと40ピンヘッダーの挿入状態を電源OFFで確認する
 
-サービスが `active` でログに `expr=sleeping` が出る場合は、自動睡眠中です。既定では起動後4分は自動睡眠せず、通常5分、夜間2分の無操作で眠ります。Pi Zero Wは既定で睡眠顔を表示したままです。以前の設定で `SLEEP_BACKLIGHT=0` を追加している場合は、睡眠中に完全消灯します。
+サービスが `active` でログに `expr=sleeping` が出る場合は睡眠中です。通常20秒、夜間10秒の無操作で自動睡眠しますが、この状態ではLive会話を維持しているため、そのまま話しかければ起きます。明示的な「おやすみ」後だけはLiveを停止するため、ボタンまたはIMUで起こします。Pi Zero Wは既定で睡眠顔を表示したままです。
 
 ## 音声対話が動かない
 
