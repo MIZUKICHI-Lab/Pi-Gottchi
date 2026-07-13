@@ -393,10 +393,11 @@ class Moko:
         if self.chat is None or not self.chat.connected:
             # RESTモード（Live切断中の自動フォールバック含む）: 押下中録音→話す
             self.press_mode = "rest"         # 解放時に再判定せず、この経路を維持
-            self._rest_fallback = True
-            self._rest_release_pending = False
-            if self.chat:
-                self.chat.suspend()           # 録音・REST処理中のALSA競合を防ぐ
+            with self._control_lock:
+                self._rest_fallback = True
+                self._rest_release_pending = False
+                if self.chat:
+                    self.chat.suspend()       # 録音・REST処理中のALSA競合を防ぐ
             self._start_recording()
             if self.online:
                 threading.Thread(target=voice.prewarm, args=(self.env,),
@@ -418,7 +419,8 @@ class Moko:
             self.clicks += 1
             self.last_click = time.time()
             if mode == "rest":
-                self._rest_release_pending = True
+                with self._control_lock:
+                    self._rest_release_pending = True
 
     # ---- 録音 ----
     def _start_recording(self):
@@ -555,16 +557,19 @@ class Moko:
                 print(f"[btn] おはなし (録音={size}B ok={ok} busy={self.convo.busy()})")
                 if not self.online:
                     self._react("sad", 2.5, "no_net")
-                    self._rest_release_pending = True
+                    with self._control_lock:
+                        self._rest_release_pending = True
                 elif ok and not self.convo.busy():
                     with self._control_lock:
                         self._rest_request_generation = request_generation
                     self.convo.start(REC_WAV)
                 elif not ok:                 # 録音が短い/マイク競合
                     self._react("sad", 2.5, "no_hear")
-                    self._rest_release_pending = True
+                    with self._control_lock:
+                        self._rest_release_pending = True
                 else:
-                    self._rest_release_pending = True
+                    with self._control_lock:
+                        self._rest_release_pending = True
 
     def _handle_live(self):
         """連続会話の表示・活動・確定発話イベントを本体へ反映する。"""
@@ -623,8 +628,9 @@ class Moko:
                 # 再生準備中のボタン起床も尊重し、古い結果で寝直さない。
                 if request_generation == self._wake_generation:
                     self.pending_sleep = True
-        if self._rest_fallback:
-            self._rest_release_pending = True
+        with self._control_lock:
+            if self._rest_fallback:
+                self._rest_release_pending = True
 
     def _handle_pending_sleep(self):
         with self._control_lock:
@@ -633,16 +639,16 @@ class Moko:
 
     def _handle_rest_fallback(self):
         """REST返答・エラー音声が終わってからLiveを再開する。"""
-        if not self._rest_fallback or not self._rest_release_pending:
-            return
-        if self.rec_proc or self.convo.busy() or self._speaking():
-            return
-        self._rest_release_pending = False
-        self._rest_fallback = False
         with self._control_lock:
-            deep_sleeping = self.manual_sleep
-        if self.chat and not deep_sleeping:
-            self.chat.resume()
+            if not self._rest_fallback or not self._rest_release_pending:
+                return
+            if self.rec_proc or self.convo.busy() or self._speaking():
+                return
+            self._rest_release_pending = False
+            self._rest_fallback = False
+            if self.chat and not self.manual_sleep:
+                # 新しいGPIO押下は同じlockの後でsuspendするため、必ず後勝ちになる。
+                self.chat.resume()
 
     def _handle_sleep_state(self):
         """自動睡眠は会話待機を保ち、明示睡眠だけLiveを停止する。"""
@@ -651,11 +657,13 @@ class Moko:
             sleeping = False                  # 会話ターンの途中では寝ない
         with self._control_lock:
             deep_sleeping = sleeping and self.manual_sleep
+            entering_deep_sleep = deep_sleeping and not self.was_deep_sleeping
+            if entering_deep_sleep and self.chat:
+                # 物理wakeはこのlockの後で実行されるため、起床後の再suspendを防ぐ。
+                self.chat.suspend()
         if sleeping and not self.was_sleeping:
             if deep_sleeping:
                 print("[*] おやすみ（明示睡眠: マイク停止）")
-                if self.chat:
-                    self.chat.suspend()
             else:
                 print("[*] うとうと（自動睡眠: 会話待機は継続）")
             self.board.set_backlight(self.sleep_backlight)
@@ -663,8 +671,6 @@ class Moko:
         elif sleeping and deep_sleeping and not self.was_deep_sleeping:
             # 自動睡眠中に「おやすみ」が確定した場合も、深い睡眠へ移す。
             print("[*] おやすみ（明示睡眠: マイク停止）")
-            if self.chat:
-                self.chat.suspend()
             self.motion.react("sleeping")
         elif not sleeping and self.was_sleeping:
             print("[*] おはよう（画面・会話を再開）")
