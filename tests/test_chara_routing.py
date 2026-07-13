@@ -76,6 +76,10 @@ class ButtonRoutingTests(unittest.TestCase):
             def suspend(self):
                 self.suspends += 1
 
+            @staticmethod
+            def external_mute(_muted):
+                return None
+
         class Board:
             @staticmethod
             def set_backlight(_value):
@@ -296,6 +300,42 @@ class ButtonRoutingTests(unittest.TestCase):
         moko._handle_live()
         self.assertEqual(2, moko._wake_generation)
         self.assertFalse(moko.pending_sleep)
+
+    def test_live_input_transcription_is_exposed_as_user_bubble(self):
+        class Chat:
+            phase = "listen"
+            in_text = "リアルタイムで表示して"
+            out_text = ""
+            last_voice = 0
+
+            @staticmethod
+            def external_mute(_muted):
+                return None
+
+            @staticmethod
+            def pop_completed_turn():
+                return None
+
+        class Motion:
+            moving = chara.threading.Event()
+
+            @staticmethod
+            def react(_name):
+                return True
+
+        moko = chara.Moko.__new__(chara.Moko)
+        moko._control_lock = chara.threading.RLock()
+        moko._wake_generation = 0
+        moko.last_activity = 0
+        moko._last_live_phase = "idle"
+        moko.audio_proc = None
+        moko.motion = Motion()
+        moko.state = {"mood": 50, "bond_xp": 0}
+        moko.user_bubble = None
+        moko.bubble = None
+        moko.chat = Chat()
+        moko._handle_live()
+        self.assertEqual("あなた: リアルタイムで表示して", moko.user_bubble[0])
 
     def test_wake_during_pending_sleep_transition_wins(self):
         moko = chara.Moko.__new__(chara.Moko)

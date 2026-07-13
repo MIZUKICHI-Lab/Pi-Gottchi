@@ -104,6 +104,7 @@ class LiveChat:
         self._finalize_token = 0
         self._control_generation = 0
         self._turn_control_generation = None
+        self._first_input_at = None
         # 声紋ライト実験: off=無効 / log=一致度をログに出すだけ / gate=知らない声を聞き流す
         self.vp_mode = env.get("VOICEPRINT", "off") if voiceprint else "off"
         if self.vp_mode not in ("off", "log", "gate"):
@@ -227,7 +228,9 @@ class LiveChat:
                 + f"\n\n現在の日時: {now}（日本時間）。"
                 "\nユーザーの発話は音声で届きます。かならず日本語で答えてください。")}]},
             "realtimeInputConfig": {
-                "activityHandling": "NO_INTERRUPTION",   # 話し終わるまで中断しない
+                # 返答開始直前の新しい発話を古い返答の後へ持ち越さない。
+                # 再生中は端末側でマイクを閉じるため、自己音声の割り込みは防ぐ。
+                "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
                 "automaticActivityDetection": {
                     # 500ms未満は自然な文中の間まで分割しやすいため使わない。
                     "silenceDurationMs": self.silence_ms,
@@ -433,6 +436,9 @@ class LiveChat:
                     self._arm_finalize_locked(self._turn_generation)
             if real_input:                       # 本物の発話のみ起きてる扱い
                 self.last_voice = time.monotonic()
+                with self._turn_lock:
+                    if self._first_input_at is None:
+                        self._first_input_at = time.monotonic()
                 if self.phase == "idle" and not pending:
                     self.phase = "listen"
         text = content.get("outputTranscription", {}).get("text")
@@ -501,6 +507,11 @@ class LiveChat:
             self._player = player
             self._playing = True
             self.phase = "play"
+            with self._turn_lock:
+                first_input_at = self._first_input_at
+            if first_input_at is not None:
+                print(f"[live] 応答音声開始 (入力字幕から"
+                      f"{time.monotonic() - first_input_at:.2f}s)")
             return True
 
     def _write_player(self, audio):
@@ -595,6 +606,7 @@ class LiveChat:
                 self._turn_control_generation is not None
                 and self._turn_control_generation == self._control_generation)
             self._turn_control_generation = None
+            self._first_input_at = None
             if real and control_allowed:
                 # suspend側は同じlock取得後にqueueをdrainできる。
                 self._completed_turns.put(in_text)
@@ -632,6 +644,7 @@ class LiveChat:
             self._vp_ok = None
             self._turn_audio = []
             self._turn_control_generation = None
+            self._first_input_at = None
             if clear_completed:
                 while True:
                     try:

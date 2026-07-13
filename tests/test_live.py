@@ -67,6 +67,10 @@ class LiveChatTests(unittest.TestCase):
         setup = chat._setup_message()["setup"]
         vad = setup["realtimeInputConfig"]["automaticActivityDetection"]
         self.assertEqual(700, vad["silenceDurationMs"])
+        self.assertEqual(
+            "START_OF_ACTIVITY_INTERRUPTS",
+            setup["realtimeInputConfig"]["activityHandling"],
+        )
         self.assertEqual(100, chat.chunk_ms)
         self.assertEqual("off", chat.vp_mode)
 

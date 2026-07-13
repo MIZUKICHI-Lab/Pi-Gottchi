@@ -344,7 +344,7 @@ class Moko:
         self.chat = None             # 連続会話（ChatGPT音声モード風）
         self.was_sleeping = False
         self.was_deep_sleeping = False
-        self.was_asleep = False      # 記憶整理トリガー用（寝入りの瞬間を検出）
+        self.was_asleep = False      # 明示的な深い睡眠での記憶整理トリガー
         self._control_lock = threading.RLock()
         self.manual_sleep = False    # 音声コマンドで入る、明示的な睡眠ラッチ
         self.pending_sleep = False   # 返答再生後にmanual_sleepへ移す
@@ -370,6 +370,7 @@ class Moko:
         self.react_until = 0.0
         self.hearts_start = None
         self.bubble = None           # (text, until)
+        self.user_bubble = None      # 聞き取り中の本人文字起こし (text, until)
         self.last_activity = time.monotonic()
         self.last_ambient = 0.0
         self.next_blink = time.time() + 3
@@ -512,6 +513,8 @@ class Moko:
         self.state["bond_xp"] += xp
         if expr == "happy":
             self.hearts_start = now
+        if self.chat:
+            self.chat.external_mute(True)     # サーボ開始前の1フレームも機械音を送らない
         self.motion.react("wake" if clip == "wake" else expr)
         if clip:
             self._play_clip(clip)
@@ -582,6 +585,11 @@ class Moko:
             self._last_live_phase = self.chat.phase
         # 反応音声とサーボ機械音はGeminiへ戻さない。
         self.chat.external_mute(self._speaking() or self.motion.moving.is_set())
+        input_text = getattr(self.chat, "in_text", "")
+        if self.chat.phase in ("listen", "think") and input_text:
+            # 部分字幕は表示専用。制御にはturnComplete後の確定発話だけを使う。
+            self.user_bubble = (
+                f"あなた: {input_text[-100:]}", now + 1.0)
         if self.chat.phase == "play" and self.chat.out_text:
             self.bubble = (self.chat.out_text, now + 2.0)
             self.state["mood"] = min(100.0, self.state["mood"] + 0.05)
@@ -667,10 +675,14 @@ class Moko:
             else:
                 print("[*] うとうと（自動睡眠: 会話待機は継続）")
             self.board.set_backlight(self.sleep_backlight)
+            if self.chat:
+                self.chat.external_mute(True)
             self.motion.react("sleeping")
         elif sleeping and deep_sleeping and not self.was_deep_sleeping:
             # 自動睡眠中に「おやすみ」が確定した場合も、深い睡眠へ移す。
             print("[*] おやすみ（明示睡眠: マイク停止）")
+            if self.chat:
+                self.chat.external_mute(True)
             self.motion.react("sleeping")
         elif not sleeping and self.was_sleeping:
             print("[*] おはよう（画面・会話を再開）")
@@ -828,7 +840,10 @@ class Moko:
             else:
                 self.hearts_start = None
         img = face.render(expr, self.frame, extras)
-        if self.bubble and time.time() < self.bubble[1] and expr == "talking":
+        if (self.user_bubble and time.time() < self.user_bubble[1]
+                and expr in ("listening", "thinking")):
+            draw_bubble(img, self.user_bubble[0], self.font)
+        elif self.bubble and time.time() < self.bubble[1] and expr == "talking":
             draw_bubble(img, self.bubble[0], self.font)
         self.board.draw_image(0, 0, face.W, face.H, rgb565_bytes(img))
         self.board.set_rgb(*LED.get(expr, LED["idle"]))
@@ -889,9 +904,11 @@ class Moko:
                 self._handle_sleep_state()
 
                 sleeping = self._is_sleeping()
-                if sleeping and not self.was_asleep:
-                    self.memory.consolidate_async(self.env)  # 寝ている間に記憶を整理
-                self.was_asleep = sleeping
+                with self._control_lock:
+                    deep_sleeping = sleeping and self.manual_sleep
+                if deep_sleeping and not self.was_asleep:
+                    self.memory.consolidate_async(self.env)
+                self.was_asleep = deep_sleeping
 
                 self._update_blink()
                 expr = self._current_expr()

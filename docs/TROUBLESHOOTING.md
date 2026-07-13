@@ -89,6 +89,8 @@ LIVE_CHUNK_MS=200
 VOICEPRINT=off
 ```
 
+`rpi-connect signin --non-interactive` が繰り返し高CPUを使っている場合、音声処理ではなくRaspberry Pi Connectの認証再試行が単一CPUを圧迫しています。RPi Connectを使用しているか確認してから、再認証またはサービス停止を判断してください。無断で無効化すると別の遠隔接続手段を失う可能性があります。
+
 ## センサーが動かない
 
 ```bash

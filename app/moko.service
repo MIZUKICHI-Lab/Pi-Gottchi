@@ -9,6 +9,9 @@ WorkingDirectory=/home/mizukichi/Pi-Gottchi/app
 ExecStart=/usr/bin/python3 -u /home/mizukichi/Pi-Gottchi/app/chara.py
 Restart=always
 RestartSec=3
+# Pi Zeroの単一CPUが混雑しても音声sender/receiverを優先する。
+Nice=-5
+CPUWeight=900
 StandardOutput=journal
 StandardError=journal
 
