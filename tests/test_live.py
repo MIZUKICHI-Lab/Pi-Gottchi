@@ -74,7 +74,7 @@ class LiveChatTests(unittest.TestCase):
         chat = self.make_chat()
         chat.phase = "listen"
         chat.in_text = "まだ話しています"
-        chat.last_voice = time.time() - 5
+        chat.last_voice = time.monotonic() - 5
         self.assertFalse(chat._input_muted())
 
     def test_audio_before_transcription_is_fully_played(self):

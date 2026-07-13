@@ -83,7 +83,7 @@ class LiveChat:
         self.phase = "idle"
         self.in_text = ""
         self.out_text = ""
-        self.last_voice = time.time()
+        self.last_voice = time.monotonic()
         self.connected = False
         self._ws = None
         self._send_lock = threading.Lock()
@@ -142,7 +142,7 @@ class LiveChat:
     def resume(self):
         if self._suspended.is_set():
             self._suspended.clear()
-            self.last_voice = time.time()
+            self.last_voice = time.monotonic()
 
     def close(self):
         self._stop.set()
@@ -432,7 +432,7 @@ class LiveChat:
                 if pending:
                     self._arm_finalize_locked(self._turn_generation)
             if real_input:                       # 本物の発話のみ起きてる扱い
-                self.last_voice = time.time()
+                self.last_voice = time.monotonic()
                 if self.phase == "idle" and not pending:
                     self.phase = "listen"
         text = content.get("outputTranscription", {}).get("text")
@@ -600,7 +600,7 @@ class LiveChat:
                 self._completed_turns.put(in_text)
 
         if real:
-            self.last_voice = time.time()    # 雑音ターンでは眠気を妨げない
+            self.last_voice = time.monotonic()  # 雑音ターンでは眠気を妨げない
             print(f"[you] {in_text}")
             print(f"[moko] {out_text}")
             if self.memory and vp_ok is not False:   # 聞き流したターンは覚えない

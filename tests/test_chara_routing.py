@@ -36,12 +36,60 @@ import chara  # noqa: E402
 
 
 class ButtonRoutingTests(unittest.TestCase):
-    def test_simple_switch_sleep_default_is_off(self):
-        simple = types.SimpleNamespace(backlight_mode=False)
-        pwm = types.SimpleNamespace(backlight_mode=True)
-        self.assertEqual(0, chara.default_sleep_backlight(simple))
-        self.assertEqual(chara.SLEEP_BACKLIGHT,
-                         chara.default_sleep_backlight(pwm))
+    def test_simple_switch_sleep_default_keeps_display_visible(self):
+        class Board:
+            def __init__(self):
+                self.values = []
+
+            def set_backlight(self, value):
+                self.values.append(value)
+
+        class Motion:
+            def __init__(self):
+                self.actions = []
+
+            def react(self, name):
+                self.actions.append(name)
+
+        moko = chara.Moko.__new__(chara.Moko)
+        moko.chat = None
+        moko.was_sleeping = False
+        moko.sleep_backlight = chara.SLEEP_BACKLIGHT
+        moko.board = Board()
+        moko.motion = Motion()
+        with mock.patch.object(moko, "_is_sleeping", return_value=True):
+            moko._handle_sleep_state()
+        self.assertEqual([chara.SLEEP_BACKLIGHT], moko.board.values)
+        self.assertGreater(moko.board.values[0], 0)
+        self.assertEqual(["sleeping"], moko.motion.actions)
+
+    def test_startup_grace_uses_monotonic_time_before_auto_sleep(self):
+        class Conversation:
+            @staticmethod
+            def busy():
+                return False
+
+        moko = chara.Moko.__new__(chara.Moko)
+        moko._control_lock = chara.threading.RLock()
+        moko.manual_sleep = False
+        moko._rest_fallback = False
+        moko.press_t = None
+        moko.rec_proc = None
+        moko.audio_proc = None
+        moko.convo = Conversation()
+        moko.chat = None
+        moko._boot_monotonic = 100
+        moko.last_activity = 100
+        moko.startup_awake_sec = 240
+        moko.auto_sleep_sec = 300
+        moko.night_auto_sleep_sec = 120
+
+        with (mock.patch.object(chara.time, "monotonic", return_value=200),
+              mock.patch.object(chara, "is_night", return_value=True)):
+            self.assertFalse(moko._is_sleeping())
+        with (mock.patch.object(chara.time, "monotonic", return_value=350),
+              mock.patch.object(chara, "is_night", return_value=True)):
+            self.assertTrue(moko._is_sleeping())
 
     def bare_moko(self, mode):
         moko = chara.Moko.__new__(chara.Moko)

@@ -52,10 +52,11 @@ FONT_PATHS = ("/usr/share/fonts/truetype/vlgothic/VL-PGothic-Regular.ttf",
 
 FRAME_SEC = 0.2              # 描画周期（Pi Zero で無理のない速度）
 AWAKE_BACKLIGHT = 100        # 起床中のLCDバックライト（0〜100）
-SLEEP_BACKLIGHT = 12         # PWM対応機の睡眠時。ON/OFF機は未設定なら0にする
+SLEEP_BACKLIGHT = 12         # PWM対応機は減光。ON/OFF機では点灯した睡眠表示になる
 HOLD_SEC = 0.35              # これ以上の長押しで「話しかける」
-SLEEP_AFTER = 20.0           # 会話・操作がないと眠るまでの秒数
-NIGHT_SLEEP_AFTER = 10.0     # 夜間の入眠までの秒数
+AUTO_SLEEP_SEC = 300         # 会話・操作がないと自動で眠るまでの秒数
+NIGHT_AUTO_SLEEP_SEC = 120   # 夜間の自動入眠までの秒数
+STARTUP_AWAKE_SEC = 240      # Wi-Fi・時刻同期前に寝ないための起動猶予
 NIGHT = (22, 7)              # 夜時間帯 [開始, 終了)
 AMBIENT_SEC = 6.0            # 環境音チェックの間隔
 AMBIENT_RMS = 0.09           # 反応する音量
@@ -154,11 +155,6 @@ def env_int(env, name, default, low=0, high=100):
         value = default
         print(f"[config] {name} は整数でないため既定値 {default} を使います")
     return max(low, min(high, value))
-
-
-def default_sleep_backlight(board):
-    """PWM非対応のPi Zero Wでは、減光値が点灯扱いになるため消灯を返す。"""
-    return SLEEP_BACKLIGHT if getattr(board, "backlight_mode", True) else 0
 
 
 try:
@@ -314,6 +310,7 @@ class Convo:
 # ---------- 本体 ----------
 class Moko:
     def __init__(self):
+        self._boot_monotonic = time.monotonic()
         self.env = voice.load_env(os.path.join(HERE, ".env"),
                                   "/home/mizukichi/whisplay-assistant/.env")
         self.online = self.env["_voice_ok"]
@@ -327,9 +324,15 @@ class Moko:
         stop_splash()
         self.awake_backlight = env_int(
             self.env, "AWAKE_BACKLIGHT", AWAKE_BACKLIGHT)
-        self.board = WhisplayBoard()
         self.sleep_backlight = env_int(
-            self.env, "SLEEP_BACKLIGHT", default_sleep_backlight(self.board))
+            self.env, "SLEEP_BACKLIGHT", SLEEP_BACKLIGHT)
+        self.auto_sleep_sec = env_int(
+            self.env, "AUTO_SLEEP_SEC", AUTO_SLEEP_SEC, 30, 86400)
+        self.night_auto_sleep_sec = env_int(
+            self.env, "NIGHT_AUTO_SLEEP_SEC", NIGHT_AUTO_SLEEP_SEC, 30, 86400)
+        self.startup_awake_sec = env_int(
+            self.env, "STARTUP_AWAKE_SEC", STARTUP_AWAKE_SEC, 0, 1800)
+        self.board = WhisplayBoard()
         self.board.set_backlight(self.awake_backlight)
         self.font = load_font(16)
         self.state = load_state()
@@ -366,7 +369,7 @@ class Moko:
         self.react_until = 0.0
         self.hearts_start = None
         self.bubble = None           # (text, until)
-        self.last_activity = time.time()
+        self.last_activity = time.monotonic()
         self.last_ambient = 0.0
         self.next_blink = time.time() + 3
         self.blink_now = False
@@ -483,7 +486,7 @@ class Moko:
             if chat:
                 # 完了済みイベントも同じ起床操作で破棄し、後から寝直さない。
                 chat.cancel_pending_controls()
-            self.last_activity = time.time()
+            self.last_activity = time.monotonic()
             generation = self._wake_generation
         if was_sleeping:
             print(f"[*] 起床要求: {reason}")
@@ -611,7 +614,7 @@ class Moko:
             self._react("sad", 2.5, "no_hear")
         elif stage == "err_net":
             self._react("sad", 3.0, "no_net")
-        self.last_activity = time.time()
+        self.last_activity = time.monotonic()
         if stage == "speak" and detect_control_intent(user_text) == "sleep":
             with self._control_lock:
                 # 再生準備中のボタン起床も尊重し、古い結果で寝直さない。
@@ -731,8 +734,12 @@ class Moko:
                 or self.convo.busy() or self._speaking()
                 or (self.chat is not None and self.chat.phase != "idle")):
             return False
-        idle = time.time() - self.last_activity
-        return idle > SLEEP_AFTER or (is_night() and idle > NIGHT_SLEEP_AFTER)
+        now = time.monotonic()
+        if now - self._boot_monotonic < self.startup_awake_sec:
+            return False
+        idle = now - self.last_activity
+        return (idle > self.auto_sleep_sec
+                or (is_night() and idle > self.night_auto_sleep_sec))
 
     def _decay_mood(self):
         st = self.state

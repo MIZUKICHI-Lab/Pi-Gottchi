@@ -15,9 +15,12 @@
 | `LIVE_ECHO_GUARD_MS` | いいえ | `350` | 再生・サーボ後の残響破棄（100〜1000ms） |
 | `VOICEPRINT` | いいえ | `off` | `off`、`log`、`gate` のいずれか |
 | `AWAKE_BACKLIGHT` | いいえ | `100` | 起床中のLCDバックライト（0〜100） |
-| `SLEEP_BACKLIGHT` | いいえ | `12`（Pi Zero Wは`0`） | 睡眠中のLCDバックライト（0〜100） |
+| `SLEEP_BACKLIGHT` | いいえ | `12` | 睡眠中のLCDバックライト（0〜100） |
+| `STARTUP_AWAKE_SEC` | いいえ | `240` | 起動後に自動睡眠を禁止する時間（0〜1800秒） |
+| `AUTO_SLEEP_SEC` | いいえ | `300` | 通常時の自動睡眠までの無操作時間（30〜86400秒） |
+| `NIGHT_AUTO_SLEEP_SEC` | いいえ | `120` | 夜間の自動睡眠までの無操作時間（30〜86400秒） |
 
-Pi Zero WでWhisplayドライバが `Simple Switch` と判定した場合、1〜100はすべて同じ点灯状態です。そのため `SLEEP_BACKLIGHT` を明示しなければ睡眠時は0で消灯します。PWM対応機では12%減光を使います。
+Pi Zero WでWhisplayドライバが `Simple Switch` と判定した場合、1〜100はすべて同じ点灯状態です。既定では睡眠顔を表示したままにし、明示的に消灯したい場合だけ `SLEEP_BACKLIGHT=0` を設定します。PWM対応機では12%減光を使います。起動猶予は、Wi-Fiと時刻同期より先に自動睡眠してLive再接続を止めないためのものです。
 
 モデル名は API 側で変更・廃止されることがあります。接続できない場合は Google の最新ドキュメントで利用可能なモデル名を確認してください。
 
@@ -68,7 +71,7 @@ Pi Zero WでWhisplayドライバが `Simple Switch` と判定した場合、1〜
 
 | 変更内容 | ファイル・定数 |
 |---|---|
-| 昼・夜の睡眠時間 | `app/chara.py` の `SLEEP_AFTER`、`NIGHT_SLEEP_AFTER` |
+| 起動猶予・昼夜の睡眠時間 | `STARTUP_AWAKE_SEC`、`AUTO_SLEEP_SEC`、`NIGHT_AUTO_SLEEP_SEC` |
 | 夜間の範囲 | `app/chara.py` の `NIGHT` |
 | 環境音・起床音量 | `app/chara.py` の `AMBIENT_RMS`、`WAKE_RMS` |
 | 低残量・終了残量 | `app/chara.py` の `BATT_LOW`、`BATT_CRITICAL` |
