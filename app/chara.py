@@ -124,10 +124,11 @@ def wrap_jp(draw, text, font, max_w):
     return lines
 
 
-def draw_bubble(img, text, font):
+def draw_bubble(img, text, font, latest=False):
     """画面上部に吹き出しでセリフを表示。"""
     draw = ImageDraw.Draw(img)
-    lines = wrap_jp(draw, text, font, 196)[:4]
+    wrapped = wrap_jp(draw, text, font, 196)
+    lines = wrapped[-4:] if latest else wrapped[:4]
     h = 16 + 19 * len(lines)
     draw.rounded_rectangle([10, 6, 230, 6 + h], radius=13,
                            fill=(255, 255, 255), outline=(226, 200, 196), width=2)
@@ -687,6 +688,8 @@ class Moko:
         elif not sleeping and self.was_sleeping:
             print("[*] おはよう（画面・会話を再開）")
             self.board.set_backlight(self.awake_backlight)
+            if self.chat:
+                self.chat.external_mute(True)
             self.motion.react("wake")
             if self.chat and not self._rest_fallback:
                 self.chat.resume()
@@ -842,7 +845,7 @@ class Moko:
         img = face.render(expr, self.frame, extras)
         if (self.user_bubble and time.time() < self.user_bubble[1]
                 and expr in ("listening", "thinking")):
-            draw_bubble(img, self.user_bubble[0], self.font)
+            draw_bubble(img, self.user_bubble[0], self.font, latest=True)
         elif self.bubble and time.time() < self.bubble[1] and expr == "talking":
             draw_bubble(img, self.bubble[0], self.font)
         self.board.draw_image(0, 0, face.W, face.H, rgb565_bytes(img))

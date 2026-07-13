@@ -109,6 +109,46 @@ class ButtonRoutingTests(unittest.TestCase):
         self.assertEqual(1, moko.chat.suspends)
         self.assertTrue(moko.was_deep_sleeping)
 
+    def test_wake_mutes_microphone_before_servo_motion(self):
+        events = []
+
+        class Chat:
+            phase = "idle"
+
+            @staticmethod
+            def external_mute(muted):
+                events.append(("mute", muted))
+
+            @staticmethod
+            def resume():
+                events.append(("resume", None))
+
+        class Board:
+            @staticmethod
+            def set_backlight(_value):
+                events.append(("backlight", None))
+
+        class Motion:
+            @staticmethod
+            def react(name):
+                events.append(("motion", name))
+
+        moko = chara.Moko.__new__(chara.Moko)
+        moko._control_lock = chara.threading.RLock()
+        moko.manual_sleep = False
+        moko._rest_fallback = False
+        moko.chat = Chat()
+        moko.was_sleeping = True
+        moko.was_deep_sleeping = False
+        moko.awake_backlight = 80
+        moko.board = Board()
+        moko.motion = Motion()
+        with mock.patch.object(moko, "_is_sleeping", return_value=False):
+            moko._handle_sleep_state()
+        self.assertLess(events.index(("mute", True)),
+                        events.index(("motion", "wake")))
+        self.assertEqual(("resume", None), events[-1])
+
     def test_startup_grace_uses_monotonic_time_before_auto_sleep(self):
         class Conversation:
             @staticmethod

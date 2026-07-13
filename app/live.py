@@ -228,9 +228,9 @@ class LiveChat:
                 + f"\n\n現在の日時: {now}（日本時間）。"
                 "\nユーザーの発話は音声で届きます。かならず日本語で答えてください。")}]},
             "realtimeInputConfig": {
-                # 返答開始直前の新しい発話を古い返答の後へ持ち越さない。
-                # 再生中は端末側でマイクを閉じるため、自己音声の割り込みは防ぐ。
-                "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
+                # AECなしの筐体では再生音を本人の割り込みと誤検出し得るため、
+                # 安全な半二重を維持する。返答の短文化で待ち時間を抑える。
+                "activityHandling": "NO_INTERRUPTION",
                 "automaticActivityDetection": {
                     # 500ms未満は自然な文中の間まで分割しやすいため使わない。
                     "silenceDurationMs": self.silence_ms,
@@ -450,8 +450,6 @@ class LiveChat:
 
         interrupted = bool(content.get("interrupted"))
         if interrupted:
-            # 公式仕様どおり即座に再生を止める。ただし同じメッセージにある
-            # turnComplete等はこの後も必ず処理し、状態を固めない。
             self._stop_player()
 
         if not interrupted:
